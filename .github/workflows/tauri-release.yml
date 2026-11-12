@@ -1,0 +1,156 @@
+name: Tauri release
+
+on:
+  workflow_call:
+    inputs:
+      publish:
+        description: Publish a signed release from a version tag; false only builds artifacts.
+        type: boolean
+        default: false
+      targets:
+        description: JSON array of supported Rust targets.
+        type: string
+        default: '["aarch64-apple-darwin","x86_64-apple-darwin","x86_64-pc-windows-msvc"]'
+      build-command:
+        description: Project build command, run in Bash with TAURI_BUILD_TARGET set.
+        type: string
+        default: 'node scripts/build.mjs --target "$TAURI_BUILD_TARGET"'
+      artifact-paths:
+        description: Paths passed to upload-artifact, including release-assets manifests.
+        type: string
+        default: 'dist/*'
+      dist-directory:
+        description: Directory for downloaded release artifacts in the publish job.
+        type: string
+        default: dist
+      changelog-path:
+        description: Markdown changelog containing linked version headings.
+        type: string
+        default: CHANGELOG.md
+      release-introduction-path:
+        description: Optional Markdown introduction for the GitHub Release only.
+        type: string
+        default: ''
+      updater-public-key:
+        description: Tauri updater public key; required when publishing.
+        type: string
+        default: ''
+    secrets:
+      TAURI_SIGNING_PRIVATE_KEY:
+        required: false
+      TAURI_SIGNING_PRIVATE_KEY_PASSWORD:
+        required: false
+
+permissions:
+  contents: read
+
+jobs:
+  prepare:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      matrix: ${{ steps.prepare.outputs.matrix }}
+      platforms: ${{ steps.prepare.outputs.platforms }}
+      pnpm-version: ${{ steps.prepare.outputs.pnpm-version }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
+        with:
+          node-version: '22'
+      - uses: $/actions/prepare
+        id: prepare
+        with:
+          targets: ${{ inputs.targets }}
+          publish: ${{ inputs.publish }}
+          tag: ${{ github.ref_type == 'tag' && github.ref_name || '' }}
+          changelog-path: ${{ inputs.changelog-path }}
+      - uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
+        if: inputs.publish
+        with:
+          name: release-changes
+          path: work/release-changes.md
+          if-no-files-found: error
+          retention-days: 7
+
+  build:
+    needs: prepare
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJSON(needs.prepare.outputs.matrix) }}
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 60
+    defaults:
+      run:
+        shell: bash
+    env:
+      TAURI_BUILD_TARGET: ${{ matrix.target }}
+      RELEASE_TAG: ${{ inputs.publish && github.ref_name || '' }}
+      TAURI_UPDATER_PUBLIC_KEY: ${{ inputs.publish && inputs.updater-public-key || '' }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: pnpm/action-setup@b906affcce14559ad1aafd4ab0e942779e9f58b1 # v4
+        with:
+          version: ${{ needs.prepare.outputs.pnpm-version }}
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
+        with:
+          node-version: '22'
+          cache: pnpm
+      - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
+        with:
+          targets: ${{ matrix.target }}
+      - uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7
+        if: inputs.publish
+        with:
+          name: release-changes
+          path: work
+      - run: pnpm install --frozen-lockfile
+      - name: Build installer
+        env:
+          RELEASE_NOTES_FILE: ${{ inputs.publish && format('{0}/work/release-changes.md', github.workspace) || '' }}
+          TAURI_SIGNING_PRIVATE_KEY: ${{ inputs.publish && secrets.TAURI_SIGNING_PRIVATE_KEY || '' }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ inputs.publish && secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD || '' }}
+        run: |
+          if [[ -n "$RELEASE_TAG" && ( -z "$TAURI_UPDATER_PUBLIC_KEY" || -z "$TAURI_SIGNING_PRIVATE_KEY" ) ]]; then
+            echo '发布构建必须配置 Tauri updater 公钥和签名私钥。' >&2
+            exit 1
+          fi
+          ${{ inputs.build-command }}
+      - uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
+        with:
+          name: release-${{ matrix.target }}
+          path: ${{ inputs.artifact-paths }}
+          if-no-files-found: error
+          retention-days: 7
+
+  publish:
+    if: inputs.publish
+    needs: [prepare, build]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
+        with:
+          node-version: '22'
+      - uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7
+        with:
+          pattern: release-*
+          path: ${{ inputs.dist-directory }}
+          merge-multiple: true
+      - uses: $/actions/publish
+        with:
+          tag: ${{ github.ref_name }}
+          platforms: ${{ needs.prepare.outputs.platforms }}
+          dist-directory: ${{ inputs.dist-directory }}
+          release-introduction-path: ${{ inputs.release-introduction-path }}
+        env:
+          GH_TOKEN: ${{ github.token }}

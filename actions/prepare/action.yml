@@ -1,0 +1,37 @@
+name: Prepare Tauri release
+description: Resolve supported build targets and extract the committed release notes.
+inputs:
+  targets:
+    required: true
+    description: JSON array of Rust targets.
+  publish:
+    required: true
+    description: Whether to validate a version tag and extract release notes.
+  tag:
+    required: false
+    description: Version tag for a signed release.
+  changelog-path:
+    required: true
+    description: Path to the project's changelog.
+outputs:
+  matrix:
+    description: Build matrix as JSON.
+    value: ${{ steps.prepare.outputs.matrix }}
+  platforms:
+    description: Expected updater platform keys as JSON.
+    value: ${{ steps.prepare.outputs.platforms }}
+  pnpm-version:
+    description: pnpm version range from package.json.
+    value: ${{ steps.prepare.outputs.pnpm-version }}
+runs:
+  using: composite
+  steps:
+    - id: prepare
+      shell: bash
+      env:
+        ACTION_PATH: ${{ github.action_path }}
+        RELEASE_TARGETS: ${{ inputs.targets }}
+        RELEASE_PUBLISH: ${{ inputs.publish }}
+        RELEASE_TAG: ${{ inputs.tag }}
+        CHANGELOG_PATH: ${{ inputs.changelog-path }}
+      run: node "$ACTION_PATH/prepare.mjs"

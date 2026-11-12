@@ -1,0 +1,43 @@
+name: Publish Tauri release
+description: Prepare one complete updater manifest, then upload and publish a draft release.
+inputs:
+  tag:
+    required: true
+    description: Version tag.
+  platforms:
+    required: true
+    description: Expected updater platform keys from the prepare action.
+  dist-directory:
+    required: true
+    description: Directory containing all platform artifacts and release-changes.md.
+  release-introduction-path:
+    required: false
+    description: Optional Markdown introduction for the GitHub Release.
+runs:
+  using: composite
+  steps:
+    - name: Prepare complete updater manifest
+      shell: bash
+      env:
+        ACTION_PATH: ${{ github.action_path }}
+        RELEASE_TAG: ${{ inputs.tag }}
+        GH_REPO: ${{ github.repository }}
+        RELEASE_PLATFORMS: ${{ inputs.platforms }}
+        DIST_DIRECTORY: ${{ inputs.dist-directory }}
+        RELEASE_INTRODUCTION_PATH: ${{ inputs.release-introduction-path }}
+      run: node "$ACTION_PATH/prepare-release.mjs"
+    - name: Upload draft and publish complete release
+      shell: bash
+      env:
+        RELEASE_TAG: ${{ inputs.tag }}
+        GH_REPO: ${{ github.repository }}
+        DIST_DIRECTORY: ${{ inputs.dist-directory }}
+      run: |
+        mapfile -t assets < "$DIST_DIRECTORY/release-files.txt"
+        options=(--latest=true)
+        if [[ "$RELEASE_TAG" == *-* ]]; then
+          options=(--prerelease --latest=false)
+        fi
+        gh release create "$RELEASE_TAG" "${assets[@]}" \
+          --verify-tag --title "$RELEASE_TAG" --draft --notes-file "$DIST_DIRECTORY/release-notes.md"
+        gh release edit "$RELEASE_TAG" --draft=false "${options[@]}"
